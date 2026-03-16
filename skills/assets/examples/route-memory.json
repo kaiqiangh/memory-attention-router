@@ -8,9 +8,7 @@
     "Keep the explanation implementation-focused.",
     "Do not turn this into plain document RAG."
   ],
-  "recent_failures": [
-    "FTS query broke due to punctuation"
-  ],
+  "recent_failures": ["FTS query broke due to punctuation"],
   "unresolved_questions": [
     "how to structure skill files",
     "how to refresh stale memories"

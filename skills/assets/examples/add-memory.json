@@ -9,19 +9,9 @@
   "details": {
     "why": "You need a runnable loop before iteration is meaningful."
   },
-  "keywords": [
-    "skill",
-    "files",
-    "helper",
-    "iteration"
-  ],
-  "tags": [
-    "procedure",
-    "implementation"
-  ],
-  "source_refs": [
-    "example-file"
-  ],
+  "keywords": ["skill", "files", "helper", "iteration"],
+  "tags": ["procedure", "implementation"],
+  "source_refs": ["example-file"],
   "importance": 0.88,
   "confidence": 0.91,
   "success_score": 0.86
