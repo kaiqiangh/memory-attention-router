@@ -207,3 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 *.sqlite3
+mutation-result.json
+mutation-runs/
+runs/
+docs/
+benchmarks/
+uv.lock
