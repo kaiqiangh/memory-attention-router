@@ -1,6 +1,8 @@
 # Testing Guide
 
-## 1. Put the skill in your workspace
+Use these tests to verify the optimized skill behavior after installation.
+
+## 1. Install the skill
 
 Place the skill folder at:
 
@@ -16,117 +18,296 @@ If you are using this Git repo directly, copy the repo's `skills/` directory so 
 
 exists exactly at that path.
 
-## 2. Initialize the database
+## 2. Set a clean test database
+
+Use a fresh DB so test runs do not mix with old memory.
 
 ```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py init
+export OC_WS=<your-openclaw-workspace>
+export ROUTER="$OC_WS/skills/memory-attention-router/scripts/memory_router.py"
+export MAR_DB_PATH="/tmp/memory-attention-router-test.sqlite3"
+rm -f "$MAR_DB_PATH"
+python3 "$ROUTER" init
 ```
 
-Default DB path behavior:
+Pass condition:
 
-- with `MAR_DB_PATH`, that explicit path is used
-- without `MAR_DB_PATH`, and with standard install layout, DB defaults to:
-  `<your-openclaw-workspace>/.openclaw-memory-router.sqlite3`
+- init succeeds
+- DB is created at `$MAR_DB_PATH`
 
-Optional custom DB path:
+## 3. Scenario A: planner reuses durable preference
 
-```bash
-MAR_DB_PATH=/absolute/path/to/.memory-router.sqlite3 python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py init
-```
-
-## 3. Route a packet
+Add a durable preference:
 
 ```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py route --input-json '{
-  "session_id":"sess_demo_001",
-  "task_id":"task_openclaw_skill",
-  "goal":"Build and test an OpenClaw skill for long-term agent memory routing",
-  "step_role":"planner",
-  "user_constraints":["Use English only.","Keep the explanation implementation-focused.","Do not turn this into plain document RAG."],
-  "recent_failures":["FTS query broke due to punctuation"],
-  "unresolved_questions":["how to structure skill files","how to refresh stale memories"]
+python3 "$ROUTER" add --input-json '{
+  "memory_type":"preference",
+  "abstraction_level":3,
+  "role_scope":"global",
+  "session_id":"sess_test_a",
+  "task_id":"task_test_a",
+  "title":"Architecture response style",
+  "summary":"Answer architecture explanations in concise English and focus on implementation detail.",
+  "details":{"hard_constraint":["Use concise English","Focus on implementation detail"]},
+  "keywords":["architecture","concise","implementation"],
+  "tags":["preference","style"],
+  "importance":0.90,
+  "confidence":0.95,
+  "success_score":0.90
 }'
 ```
 
-Inspect the route trace in:
-
-- `debug.selected_blocks`
-- `debug.selected_memories`
-
-## 4. Add a new memory
+Route a planner packet:
 
 ```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py add --input-json '{
-  "memory_type":"reflection",
+python3 "$ROUTER" route --input-json '{
+  "goal":"Plan backend architecture for an event-driven notification service",
+  "step_role":"planner",
+  "session_id":"sess_test_a",
+  "task_id":"task_test_a",
+  "user_constraints":[],
+  "recent_failures":[],
+  "unresolved_questions":[]
+}'
+```
+
+Pass condition:
+
+- `packet.hard_constraints` contains the durable style rule
+- `packet.selected_memory_ids` is non-empty
+
+## 4. Scenario B: executor preserves preference and procedure
+
+Add a durable execution constraint:
+
+```bash
+python3 "$ROUTER" add --input-json '{
+  "memory_type":"preference",
+  "abstraction_level":3,
+  "role_scope":"global",
+  "session_id":"sess_test_b",
+  "task_id":"task_test_b",
+  "title":"Execution output constraint",
+  "summary":"Always keep outputs under 3 bullets.",
+  "details":{"hard_constraint":["Keep outputs under 3 bullets."]},
+  "keywords":["bullets","constraint","output"],
+  "tags":["preference","formatting"],
+  "importance":0.95,
+  "confidence":0.95,
+  "success_score":0.95
+}'
+```
+
+Add a reusable procedure:
+
+```bash
+python3 "$ROUTER" add --input-json '{
+  "memory_type":"procedure",
   "abstraction_level":2,
-  "role_scope":"critic",
-  "session_id":"sess_demo_001",
-  "task_id":"task_openclaw_skill",
-  "title":"Need sanitized FTS queries",
-  "summary":"When routing through SQLite FTS5, sanitize punctuation and fallback to recency if no lexical terms remain.",
-  "details":{"why":"Unescaped punctuation can break MATCH queries."},
-  "keywords":["sqlite","fts5","query","sanitize"],
-  "tags":["failure","reflection","router"],
-  "source_refs":["local-test"],
-  "importance":0.82,
-  "confidence":0.93,
+  "role_scope":"executor",
+  "session_id":"sess_test_b",
+  "task_id":"task_test_b",
+  "title":"Execution workflow",
+  "summary":"Follow the execution workflow and validate the final output.",
+  "keywords":["execution","workflow","validate"],
+  "tags":["procedure"],
+  "importance":0.80,
+  "confidence":0.80,
+  "success_score":0.85
+}'
+```
+
+Route an executor packet:
+
+```bash
+python3 "$ROUTER" route --input-json '{
+  "goal":"Execute the workflow and produce the final output",
+  "step_role":"executor",
+  "session_id":"sess_test_b",
+  "task_id":"task_test_b",
+  "user_constraints":[],
+  "recent_failures":[],
+  "unresolved_questions":[]
+}'
+```
+
+Pass condition:
+
+- `packet.hard_constraints` contains `Keep outputs under 3 bullets.`
+- `packet.procedures_to_follow` contains the execution workflow
+- both memories are represented in `packet.selected_memory_ids`
+
+## 5. Scenario C: reflection generates reusable procedure memory
+
+Create reflection plus procedure memory:
+
+```bash
+python3 "$ROUTER" reflect --input-json '{
+  "session_id":"sess_test_c",
+  "task_id":"task_test_c",
+  "goal":"Build and verify a memory-routing workflow",
+  "outcome":"completed",
+  "what_worked":["Add durable memory","Route packet before planning","Inspect selected blocks"],
+  "what_failed":["Raw memory dumping"],
+  "lessons":["Prefer compact packets over flat retrieval"],
+  "next_time":["Store reusable procedures after successful workflows"],
+  "create_procedure":true,
+  "source_refs":["manual-test"]
+}'
+```
+
+Route an executor packet:
+
+```bash
+python3 "$ROUTER" route --input-json '{
+  "goal":"Execute the same memory-routing workflow for a new task",
+  "step_role":"executor",
+  "session_id":"sess_test_c",
+  "task_id":"task_test_c",
+  "user_constraints":[],
+  "recent_failures":[],
+  "unresolved_questions":[]
+}'
+```
+
+Pass condition:
+
+- `procedures_to_follow` is non-empty
+- `pitfalls_to_avoid` includes the reflection lesson or failure pattern
+
+## 6. Scenario D: replacement retires stale preference
+
+Add the old rule:
+
+```bash
+python3 "$ROUTER" add --input-json '{
+  "memory_type":"preference",
+  "abstraction_level":3,
+  "role_scope":"global",
+  "session_id":"sess_test_d",
+  "task_id":"task_test_d",
+  "title":"Old style rule",
+  "summary":"Use concise English and implementation detail first.",
+  "keywords":["style","architecture"],
+  "tags":["preference","style"],
+  "importance":0.80,
+  "confidence":0.90,
+  "success_score":0.80
+}'
+```
+
+Add the replacement rule with `replaces_memory_id` set to the old memory ID.
+
+Pass condition:
+
+- the old memory becomes inactive
+- `replaced_by_memory_id` is populated
+- `retired_reason` is stored
+
+Use these commands to inspect:
+
+```bash
+python3 "$ROUTER" list --limit 50
+python3 "$ROUTER" inspect --memory-id <OLD_MEMORY_ID>
+```
+
+## 7. Scenario E: contradiction is directional
+
+Add an old summary and a newer summary that contradicts it:
+
+```bash
+python3 "$ROUTER" add --input-json '{
+  "memory_type":"summary",
+  "abstraction_level":2,
+  "role_scope":"planner",
+  "session_id":"sess_test_e",
+  "task_id":"task_test_e",
+  "title":"Old routing rule",
+  "summary":"Use typed packets for memory routing with compact packet composition.",
+  "keywords":["memory","routing","packets","compact"],
+  "tags":["summary"],
+  "importance":0.95,
+  "confidence":0.95,
   "success_score":0.70
 }'
 ```
 
-Add a replacement memory:
+Then add a new summary with a contradiction edge to the old one.
 
-```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py add --input-json '{
-  "memory_type":"procedure",
-  "title":"Validated workflow",
-  "summary":"Use a workspace-level skill folder before iterating on prompts so the skill overrides shared copies cleanly.",
-  "replaces_memory_id":"mem_old_001"
-}'
-```
+Route a planner packet for the same task.
 
-## 5. Reflect
+Pass condition:
 
-```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py reflect --input-json '{
-  "session_id":"sess_demo_001",
-  "task_id":"task_openclaw_skill",
-  "goal":"Build an OpenClaw skill for memory routing",
-  "outcome":"completed",
-  "what_worked":["workspace skill precedence","structured packet composition"],
-  "what_failed":["raw context dumping"],
-  "lessons":["Use role-aware routing before every major step."],
-  "next_time":["Write procedure memories for stable workflows."],
-  "create_procedure":true
-}'
-```
+- the newer memory ranks above the stale contradicted memory in `debug.selected_memories`
 
-## 6. Refresh stale memory
+## 8. Scenario F: graph support helps borderline ranking
 
-```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py refresh --input-json '{
-  "stale_memory_ids":["mem_replace_me"],
-  "replacement_memory_id":"mem_newer_one",
-  "refresh_reason":"Superseded by validated workflow."
-}'
-```
+Create two similarly relevant procedures:
 
-## 7. Debugging
+- one unsupported but with stronger raw importance
+- one slightly weaker on metadata but supported by a reflection edge
+
+Route a planner packet.
+
+Pass condition:
+
+- the supported procedure ranks first in `debug.selected_memories`
+- the supported procedure appears in `packet.procedures_to_follow`
+
+## 9. Compactness checks
+
+For dense-memory scenarios, inspect:
+
+- `packet.selected_memory_ids`
+- `packet.hard_constraints`
+- `packet.relevant_facts`
+- `packet.procedures_to_follow`
+- `packet.pitfalls_to_avoid`
+
+Expected caps:
+
+- selected memories <= 5
+- hard constraints <= 4
+- relevant facts <= 3
+- procedures <= 3
+- pitfalls <= 3
+
+## 10. Debugging commands
 
 List memories:
 
 ```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py list --limit 50
+python3 "$ROUTER" list --limit 50
 ```
 
-Inspect one:
+Inspect one memory:
 
 ```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py inspect --memory-id <MEMORY_ID>
+python3 "$ROUTER" inspect --memory-id <MEMORY_ID>
 ```
 
 Show recent packets:
 
 ```bash
-python3 <your-openclaw-workspace>/skills/memory-attention-router/scripts/memory_router.py packets --limit 10
+python3 "$ROUTER" packets --limit 10
 ```
+
+Inspect route trace fields when ranking looks wrong:
+
+- `debug.selected_blocks`
+- `debug.selected_memories`
+
+## 11. Optional benchmark harness
+
+If you are using the sibling autoresearch harness in this workspace, you can run the offline benchmark suite against this optimized export with:
+
+```bash
+cd /root/.openclaw/personal-assistant-workspace/projects/memory-attention-router-autoresearch
+source .venv/bin/activate
+python scripts/run_benchmarks.py --split all --router-path ./optimized-skill/skills/scripts/memory_router.py
+```
+
+Current expectation for the exported optimized skill:
+
+- 11/11 cases passed
+- 30/30 checks passed

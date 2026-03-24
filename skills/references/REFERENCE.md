@@ -1,6 +1,6 @@
 # Reference Guide
 
-This skill implements attention-style memory routing for OpenClaw.
+This skill implements deterministic, attention-style memory routing for OpenClaw.
 
 ## Goal
 
@@ -17,9 +17,8 @@ This skill is not plain RAG.
 
 Instead of:
 
-1. encode everything
-2. retrieve top-k chunks
-3. paste them into context
+1. retrieve flat top-k chunks
+2. paste raw history into context
 
 it does:
 
@@ -33,10 +32,10 @@ it does:
 ## Memory types
 
 - `episode` - concrete event, observation, tool result, failure, or action
-- `summary` - compressed session or task-level summary
+- `summary` - compressed task or session state
 - `reflection` - lesson, warning, diagnosis, or postmortem
 - `procedure` - reusable steps for future tasks
-- `preference` - durable user or system preference or constraint
+- `preference` - durable user or system preference or hard constraint
 
 ## Abstraction levels
 
@@ -45,6 +44,17 @@ it does:
 - `2` - task-level
 - `3` - long-term or durable
 
+## Current role routing table
+
+- `planner` -> `preference`, `procedure`, `summary`
+- `executor` -> `preference`, `procedure`, `episode`, `reflection`
+- `critic` -> `reflection`, `preference`, `summary`
+- `responder` -> `preference`, `summary`, `procedure`
+
+Key update:
+
+- `executor` now reads `preference` memory as well as `procedure` memory so durable output constraints survive into execution.
+
 ## Recommended writing rules
 
 ### `episode`
@@ -52,20 +62,20 @@ it does:
 Use when:
 
 - a tool produced an important result
-- a tool failed in a way that may happen again
-- the agent observed something concrete that should be recoverable later
+- a tool failed in a reusable way
+- a concrete observation should remain inspectable later
 
 Avoid when:
 
-- the event is obvious and immediately superseded
-- the content is only temporary scratch work
+- the content is temporary scratch work
+- the same signal is already captured by a better `summary`
 
 ### `summary`
 
 Use when:
 
-- a session or subtask finished
-- several raw events can be compressed into a short stable note
+- several raw events can be compressed into one stable note
+- a task or session reached a durable state worth reusing
 
 ### `reflection`
 
@@ -73,14 +83,15 @@ Use when:
 
 - a failure pattern matters
 - a lesson should affect future behavior
-- a retry strategy or caution is worth remembering
+- a warning should surface as a pitfall next time
+- a support/contradiction relationship should influence later ranking
 
 ### `procedure`
 
 Use when:
 
 - the steps are reusable
-- the procedure has already worked or is strongly grounded
+- the workflow has worked or is strongly grounded
 - the agent should follow these steps first next time
 
 ### `preference`
@@ -89,46 +100,100 @@ Use when:
 
 - the user expresses a stable preference
 - the environment has a durable rule or hard constraint
+- the rule should persist into planning, execution, or response composition
 
-## Route scoring logic
+## Two-stage routing logic
 
-The router uses these broad signals:
+### Stage A: block routing
 
-- block-level scope bias
-- step-role compatibility
-- task and session scope match
+The router first scores four coarse blocks:
+
+- `task_scoped`
+- `session_scoped`
+- `durable_global`
+- `recent_fallback`
+
+Block scoring considers:
+
+- scope bias
+- role compatibility
+- lexical overlap with goal
+- unresolved-question overlap
+- recent-failure overlap
+- freshness
+
+### Stage B: memory ranking inside selected blocks
+
+The router then ranks memories only inside the selected blocks.
+
+Row scoring uses these signals:
+
+- role match
 - lexical overlap with goal, constraints, failures, and open questions
+- task match
+- session match
 - importance
 - confidence
 - success score
 - freshness
-- graph support or contradiction edges
+- graph support
+- graph contradiction
+- selected block score
 
-The exact weights live in:
+The exact numeric weights live in:
 
 `scripts/memory_router.py`
 
-## Working-memory packet design
+## Graph semantics
 
-Every packet should be small and structured.
+Graph edges are not cosmetic. They influence ranking.
 
-Target shape:
+### `supports`
 
-- `hard_constraints`
-- `relevant_facts`
-- `procedures_to_follow`
-- `pitfalls_to_avoid`
-- `open_questions`
-- `selected_memory_ids`
+Use `supports` when later evidence validates a memory.
 
-Composition is strict by type:
+Practical effect:
+
+- helps a validated memory win borderline ranking decisions
+- especially useful when two candidate procedures are similarly relevant but only one has supporting evidence
+
+### `contradicts`
+
+Use `contradicts` when a newer memory invalidates an older one.
+
+Current behavior:
+
+- contradiction is treated directionally
+- the **target** of the contradiction edge is penalized
+- the newer memory asserting the contradiction is not penalized just for being the source of the edge
+
+This is important because otherwise both memories get dragged down and stale memory can remain too competitive.
+
+## Packet design
+
+The packet is the only thing the downstream reasoning step should need.
+
+Current field mapping:
 
 - `preference` -> `hard_constraints`
 - `procedure` -> `procedures_to_follow`
 - `reflection` -> `pitfalls_to_avoid`
-- `summary` and `episode` -> `relevant_facts`
+- `summary` / `episode` -> `relevant_facts`
 
-The packet is the input the downstream reasoning step should consume.
+Current caps:
+
+- `selected_memory_ids` -> 5
+- `hard_constraints` -> 4
+- `relevant_facts` -> 3
+- `procedures_to_follow` -> 3
+- `pitfalls_to_avoid` -> 3
+- `open_questions` -> 5
+
+Why this matters:
+
+- lower token noise
+- clearer packet semantics
+- less chance of stuffing the next step with redundant memories
 
 ## Replacement and refresh policy
 
@@ -139,13 +204,15 @@ Use replacement or refresh whenever:
 - a procedure is proven wrong
 - a summary is outdated after better evidence appears
 
-Recommended actions:
+Recommended lifecycle:
 
 1. mark stale memory inactive
 2. set `replaced_by_memory_id`
 3. persist a retirement reason
-4. add a `contradicts` edge when a replacement exists
+4. add a `contradicts` edge when replacement semantics exist
 5. keep the new memory active
+
+If replacement is clear, prefer retiring the stale memory instead of leaving both active and contradictory.
 
 ## Suggested integration points in an agent graph
 
@@ -169,3 +236,15 @@ Refresh after:
 - contradictions
 - explicit corrections
 - updated durable rules
+
+## Current validated behavior
+
+The optimized skill is expected to satisfy all of these behaviors:
+
+- planner packet reuses durable preference memory
+- executor packet preserves both hard constraints and reusable procedures
+- reflection can generate reusable procedure memory
+- replacement retires stale memory and records forward links
+- newer contradictory memory outranks stale contradicted memory
+- graph-supported procedure can outrank a slightly stronger but unsupported competitor
+- packet output remains compact under dense memory conditions

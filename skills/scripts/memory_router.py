@@ -34,7 +34,7 @@ DEFAULT_DB_BASENAME = ".openclaw-memory-router.sqlite3"
 
 ROLE_TO_TYPES: dict[str, tuple[str, ...]] = {
     "planner": ("preference", "procedure", "summary"),
-    "executor": ("procedure", "episode", "reflection"),
+    "executor": ("preference", "procedure", "episode", "reflection"),
     "critic": ("reflection", "preference", "summary"),
     "responder": ("preference", "summary", "procedure"),
 }
@@ -513,7 +513,7 @@ def classify_block(row: sqlite3.Row, payload: dict[str, Any]) -> str:
 def edge_bonus(conn: sqlite3.Connection, mem_id: str) -> tuple[float, float]:
     rows = conn.execute(
         """
-        SELECT edge_type, weight
+        SELECT from_memory_id, to_memory_id, edge_type, weight
         FROM memory_edges
         WHERE from_memory_id = ? OR to_memory_id = ?
         """,
@@ -525,7 +525,8 @@ def edge_bonus(conn: sqlite3.Connection, mem_id: str) -> tuple[float, float]:
         if row["edge_type"] in {"supports", "extends", "similar", "derived_from"}:
             support += float(row["weight"])
         elif row["edge_type"] == "contradicts":
-            contradiction += float(row["weight"])
+            if row["to_memory_id"] == mem_id:
+                contradiction += float(row["weight"])
     return min(support, 1.0), min(contradiction, 1.0)
 
 
@@ -698,7 +699,7 @@ def score_row(
         + 0.10 * confidence
         + 0.08 * success
         + 0.06 * freshness
-        + 0.05 * support
+        + 0.08 * support
         + 0.06 * block_score
         - 0.04 * contradiction
     )
@@ -752,7 +753,7 @@ def extract_constraints(
                     items.append(value)
                 elif isinstance(value, list):
                     items.extend(str(x) for x in value)
-    return dedupe_keep_order(items, limit=6)
+    return dedupe_keep_order(items, limit=4)
 
 
 def extract_relevant_facts(selected: list[sqlite3.Row]) -> list[str]:
@@ -760,12 +761,12 @@ def extract_relevant_facts(selected: list[sqlite3.Row]) -> list[str]:
     for row in selected:
         if row["memory_type"] in {"summary", "episode"}:
             items.append(row["summary"])
-    return dedupe_keep_order(items, limit=5)
+    return dedupe_keep_order(items, limit=3)
 
 
 def extract_procedures(selected: list[sqlite3.Row]) -> list[str]:
     items = [row["summary"] for row in selected if row["memory_type"] == "procedure"]
-    return dedupe_keep_order(items, limit=4)
+    return dedupe_keep_order(items, limit=3)
 
 
 def extract_pitfalls(
@@ -778,7 +779,7 @@ def extract_pitfalls(
         tags = loads_json_field(row["tags_json"], [])
         if any(tag in {"failure", "pitfall", "warning"} for tag in tags):
             items.append(row["summary"])
-    return dedupe_keep_order(items, limit=4)
+    return dedupe_keep_order(items, limit=3)
 
 
 def route_memory(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
@@ -845,7 +846,7 @@ def route_memory(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str,
         )
     )
 
-    selected_rows = [cand.row for cand in scored[:8]]
+    selected_rows = [cand.row for cand in scored[:5]]
     packet = {
         "goal": goal,
         "step_role": step_role,

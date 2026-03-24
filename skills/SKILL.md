@@ -1,26 +1,30 @@
 ---
 name: memory-attention-router
-description: Route, write, reflect on, and refresh long-term agent memory for multi-step OpenClaw tasks. Use when work depends on prior sessions, repeated workflows, user preferences, past failures, procedural learnings, or long-running project context. Trigger on explicit preference-memory phrases such as "from now on", "remember that", "always", "prefer", "avoid", "my rule is", and "use this style going forward". Build a compact working-memory packet instead of dumping raw memory or using plain document RAG.
+description: Deterministic long-term memory routing for OpenClaw. Route, write, reflect on, and refresh reusable memory for multi-step agent work. Use when the task depends on prior sessions, durable user preferences, reusable procedures, past failures, project summaries, or stale memories that need replacement. Trigger on explicit memory phrases like "from now on", "remember this", "always", "prefer", "avoid", "my rule is", "replace my previous rule", and "going forward", and whenever an agent step needs a compact working-memory packet instead of raw history or plain RAG.
 ---
 
 # Memory Attention Router Skill
 
-This skill turns long agent memory into a small, role-aware working-memory packet.
+Turn long-term memory into a small, role-aware working-memory packet.
 
-Trigger this skill immediately when the user states a durable preference or rule, especially with phrases like:
+Do not use this skill as plain document RAG.
+Do not dump raw memory lists into model context.
+Route to the right memory blocks, compose a compact packet, write back new learnings, and retire stale memory when better evidence appears.
+
+## Trigger cues
+
+Trigger immediately when the user states a durable rule or asks to preserve or replace memory, especially with phrases like:
 
 - from now on
-- remember that
-- record to memory
+- remember this
 - always
 - prefer
 - avoid
 - my rule is
+- replace my previous rule
 - going forward
 
-Do not treat this as normal document RAG.
-Do not dump large raw memory lists into model context.
-Route to the right memory blocks, select a small set of memories, compose a compact packet, write back new learnings, and retire stale memories when better evidence appears.
+Also trigger when a planning, execution, critique, or response step needs compact memory state rather than raw history.
 
 ## Step roles
 
@@ -31,12 +35,16 @@ Choose the current step role before reading memory:
 - `critic`
 - `responder`
 
-Default type preferences:
+Current type preferences:
 
 - `planner` -> `preference`, `procedure`, `summary`
-- `executor` -> `procedure`, `episode`, `reflection`
+- `executor` -> `preference`, `procedure`, `episode`, `reflection`
 - `critic` -> `reflection`, `preference`, `summary`
 - `responder` -> `preference`, `summary`, `procedure`
+
+Important implication:
+
+- `executor` should preserve durable hard constraints as well as reusable procedures
 
 ## Read flow
 
@@ -52,7 +60,7 @@ Default type preferences:
    `python3 {baseDir}/scripts/memory_router.py route --input-json '<JSON>'`
 3. Read the `packet`.
 4. Use the packet in downstream reasoning.
-5. Inspect `debug.selected_blocks` and `debug.selected_memories` when you need to understand why the router picked a particular packet.
+5. Inspect `debug.selected_blocks` and `debug.selected_memories` when you need to understand why a memory was selected.
 
 The router uses a deterministic two-stage flow:
 
@@ -67,19 +75,26 @@ Store memory after important outcomes:
 
 Write memory when:
 
-- a tool call succeeds and the result will matter later
-- a tool call fails in a reusable way
-- the user states a durable preference or rule
-- the agent learns a reusable procedure
-- the agent reaches a stable summary worth keeping
+- a durable user preference or rule is learned
+- a reusable procedure becomes clear
+- a tool result will matter later
+- a failure pattern should influence future behavior
+- a stable summary is worth keeping
 
-If a new memory replaces an older one, include `replaces_memory_id` in the add payload. The older memory will be retired, linked forward to the new memory, and marked with a stored retirement reason.
+If a new memory replaces an older one, include `replaces_memory_id`. The router will retire the old memory, link it forward to the replacement, and persist a retirement reason.
 
 ## Reflect flow
 
-At the end of a meaningful task or after a failure cluster, create reflection and optionally procedure memory:
+At the end of meaningful work or after a failure cluster, create reflection and optionally procedure memory:
 
 `python3 {baseDir}/scripts/memory_router.py reflect --input-json '<JSON>'`
+
+Use reflection for:
+
+- lessons
+- warnings
+- failure patterns
+- reusable procedures derived from successful work
 
 ## Refresh flow
 
@@ -105,11 +120,25 @@ A good packet contains:
 - `open_questions`
 - `selected_memory_ids`
 
-Keep packets small:
+Current compactness targets:
 
-- prefer 4 to 8 selected memories
-- never include more than 10 unless the user explicitly wants a retrospective
-- prefer summaries and procedures over raw episodes when both exist
+- `selected_memory_ids` -> cap at 5
+- `hard_constraints` -> cap at 4
+- `relevant_facts` -> cap at 3
+- `procedures_to_follow` -> cap at 3
+- `pitfalls_to_avoid` -> cap at 3
+- `open_questions` -> cap at 5
+
+Prefer small, high-signal packets over broad recall.
+
+## Routing rules
+
+- Prefer durable, reusable memory over noisy transient notes.
+- Preserve hard constraints for execution steps, not only planning steps.
+- Use `support` edges to help validated memories win borderline ranking decisions.
+- Treat `contradicts` edges directionally: penalize the stale target, not the newer memory asserting the contradiction.
+- Use `summary` instead of verbose raw history when both carry the same signal.
+- Retire stale memory when replacement is clear; do not allow conflicting active memories to accumulate indefinitely.
 
 ## Bootstrap
 
@@ -138,14 +167,3 @@ See:
 - [memory schema](references/MEMORY_SCHEMA.md)
 - [prompt templates](references/PROMPTS.md)
 - [testing guide](references/TESTING.md)
-
-## Important behavior rules
-
-- Prefer long-lived, verified, reusable memory over noisy transient notes.
-- When in doubt, write a `summary` instead of a verbose raw note.
-- Use `preference` only for stable user or system constraints.
-- Use `procedure` only for instructions that should be reused later.
-- Use `reflection` for lessons, pitfalls, and failure patterns.
-- Use `episode` for concrete events or observations.
-- If two active memories conflict, retire the stale one or add a contradiction edge.
-- Treat prompt templates as optional reference material; the default router is fully deterministic and local.
